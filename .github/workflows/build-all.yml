@@ -1,0 +1,129 @@
+name: Build Solis Coast (Linux, Windows, Android, iOS)
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_CHANNEL: "stable"
+
+jobs:
+  build-linux-windows-android:
+    name: Linux, Windows & Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Godot 4.7.2 & Export Templates
+        run: |
+          mkdir -p /tmp/godot "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
+          curl -sSL -o /tmp/godot/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          unzip -q /tmp/godot/godot.zip -d /tmp/godot
+          chmod +x "/tmp/godot/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64"
+
+          curl -sSL -o /tmp/godot/templates.tpz \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_export_templates.tpz"
+          unzip -q /tmp/godot/templates.tpz -d /tmp/godot/tpl
+          mv /tmp/godot/tpl/templates/* "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}/"
+
+      - name: Configure Android Debug Keystore & Editor Settings
+        run: |
+          mkdir -p "$HOME/.android" "$HOME/.config/godot"
+          keytool -genkey -v -keystore "$HOME/.android/debug.keystore" \
+            -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=Android,C=US"
+
+          cat << EOT > "$HOME/.config/godot/editor_settings-4.7.tres"
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "${JAVA_HOME}"
+          export/android/android_sdk_path = "${ANDROID_HOME}"
+          export/android/debug_keystore = "${HOME}/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOT
+
+      - name: Import Project & Export Linux, Windows, Android
+        run: |
+          GODOT="/tmp/godot/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64"
+          mkdir -p build/linux build/windows build/android
+
+          "$GODOT" --headless --import || true
+          "$GODOT" --headless --export-release "Linux" build/linux/SolisCoast.x86_64
+          "$GODOT" --headless --export-release "Windows Desktop" build/windows/SolisCoast.exe
+          "$GODOT" --headless --export-debug "Android" build/android/SolisCoast.apk
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SolisCoast-Linux-x86_64
+          path: build/linux/
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: SolisCoast-Windows-x86_64
+          path: build/windows/
+
+      - name: Upload Android APK (Direct)
+        uses: actions/upload-artifact@v7
+        with:
+          path: build/android/SolisCoast.apk
+          archive: false
+
+  build-ios-unsigned:
+    name: Unsigned iOS IPA
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install Godot 4.7.2 (macOS) & Export Templates
+        run: |
+          TPL_DIR="$HOME/Library/Application Support/Godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
+          mkdir -p /tmp/godot "$TPL_DIR"
+
+          curl -sSL -o /tmp/godot/godot.zip \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_macos.universal.zip"
+          unzip -q /tmp/godot/godot.zip -d /tmp/godot
+
+          curl -sSL -o /tmp/godot/templates.tpz \
+            "https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}/Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_export_templates.tpz"
+          unzip -q /tmp/godot/templates.tpz -d /tmp/godot/tpl
+          mv /tmp/godot/tpl/templates/* "$TPL_DIR/"
+
+      - name: Export Xcode Project & Build Unsigned IPA
+        run: |
+          GODOT="/tmp/godot/Godot.app/Contents/MacOS/Godot"
+          mkdir -p build/ios
+
+          "$GODOT" --headless --import || true
+          "$GODOT" --headless --export-release "iOS" build/ios/SolisCoast.xcodeproj
+
+          xcodebuild \
+            -project build/ios/SolisCoast.xcodeproj \
+            -scheme SolisCoast \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CONFIGURATION_BUILD_DIR="$PWD/build/ios/out" \
+            build
+
+          mkdir -p build/ios/Payload
+          cp -r build/ios/out/SolisCoast.app build/ios/Payload/
+          cd build/ios && zip -qr SolisCoast-unsigned.ipa Payload
+
+      - name: Upload Unsigned iOS IPA (Direct)
+        uses: actions/upload-artifact@v7
+        with:
+          path: build/ios/SolisCoast-unsigned.ipa
+          archive: false
